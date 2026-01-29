@@ -24,9 +24,11 @@ except Exception:  # pragma: no cover
     pytesseract = None  # type: ignore
 
 try:
-    from Quartz import (
+    from ApplicationServices import (
         AXUIElementCreateSystemWide,
         AXUIElementCopyAttributeValue,
+        AXUIElementPerformAction,
+        AXUIElementSetAttributeValue,
         kAXFocusedApplicationAttribute,
         kAXChildrenAttribute,
         kAXRoleAttribute,
@@ -35,6 +37,9 @@ try:
     )
 except Exception:  # pragma: no cover
     AXUIElementCreateSystemWide = None  # type: ignore
+    AXUIElementCopyAttributeValue = None  # type: ignore
+    AXUIElementPerformAction = None  # type: ignore
+    AXUIElementSetAttributeValue = None  # type: ignore
 
 app = FastAPI(title="macOS Computer Agent", version="0.1.0")
 
@@ -594,7 +599,6 @@ def ui_click(req: UiActionRequest, action_id: Optional[str] = None, x_agent_toke
         raise HTTPException(status_code=404, detail="element_id not found; run ui_search or ui_tree/full first")
 
     try:
-        from Quartz import AXUIElementPerformAction  # type: ignore
         AXUIElementPerformAction(element, "AXPress")
         _audit("ui_click", {"element_id": req.element_id})
         return {"ok": True}
@@ -621,7 +625,6 @@ def ui_set(req: UiActionRequest, x_agent_token: Optional[str] = Header(None), x_
         raise HTTPException(status_code=400, detail="value required")
 
     try:
-        from Quartz import AXUIElementSetAttributeValue  # type: ignore
         AXUIElementSetAttributeValue(element, "AXValue", req.value)
         _audit("ui_set", {"element_id": req.element_id, "value": req.value})
         return {"ok": True}
@@ -645,7 +648,6 @@ def ui_focus(req: UiActionRequest, x_agent_token: Optional[str] = Header(None), 
         raise HTTPException(status_code=404, detail="element_id not found; run ui_search or ui_tree/full first")
 
     try:
-        from Quartz import AXUIElementSetAttributeValue  # type: ignore
         AXUIElementSetAttributeValue(element, "AXFocused", True)
         _audit("ui_focus", {"element_id": req.element_id})
         return {"ok": True}
@@ -669,7 +671,6 @@ def ui_scroll(req: UiActionRequest, x_agent_token: Optional[str] = Header(None),
         raise HTTPException(status_code=404, detail="element_id not found; run ui_search or ui_tree/full first")
 
     try:
-        from Quartz import AXUIElementPerformAction  # type: ignore
         AXUIElementPerformAction(element, "AXScrollDown")
         _audit("ui_scroll", {"element_id": req.element_id})
         return {"ok": True}

@@ -3,3 +3,7 @@ __pycache__/
 .env
 .venv/
 .DS_Store
+
+# build artifacts
+*.egg-info/
+agent_audit.log
