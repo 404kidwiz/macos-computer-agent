@@ -26,12 +26,15 @@ uvicorn macos_agent.server:app --host 127.0.0.1 --port 8765
 ```
 
 ## API (local-only)
-All endpoints (except `/health`) require headers:
+All endpoints (except `/health` and `/session`) require headers:
 - `X-Agent-Token: <config token>`
 - `X-Session-Token: <from /session>`
 
 - `GET /health`
 - `POST /session`
+- `POST /session/allow` `{endpoint:"/click"}`
+- `POST /session/deny` `{endpoint:"/run_applescript"}`
+- `POST /session/confirm` `{request_id:"..."}`
 - `GET /screen`
 - `GET /cursor`
 - `GET /screenshot` (base64 PNG)
@@ -49,6 +52,8 @@ All endpoints (except `/health`) require headers:
 - `POST /ui_set` `{element_id:"...", value:"..."}`
 - `POST /ui_focus` `{element_id:"..."}`
 - `POST /ui_scroll` `{element_id:"..."}`
+
+**Per-action confirmation:** add `?require_confirm=true` to any endpoint to force a session confirmation flow.
 - `POST /ocr` `{x,y,width,height}` (optional crop)
 - `POST /confirm` `{action_id:"..."}`
 

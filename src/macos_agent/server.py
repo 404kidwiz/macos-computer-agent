@@ -64,6 +64,9 @@ AUDIT_LOG = "agent_audit.log"
 AGENT_TOKEN: Optional[str] = None
 SESSION_TOKEN_TTL_SEC = 3600
 SESSION_TOKENS: Dict[str, float] = {}
+SESSION_ALLOWLIST: Dict[str, set[str]] = {}
+SESSION_DENYLIST: Dict[str, set[str]] = {}
+SESSION_PENDING: Dict[str, Dict[str, Any]] = {}
 RATE_LIMIT_PER_MINUTE = 60
 COOLDOWNS: Dict[str, float] = {}
 LAST_ACTION: Dict[str, float] = {}
@@ -138,6 +141,18 @@ class UiActionRequest(BaseModel):
     value: Optional[str] = None
 
 
+class SessionAllowRequest(BaseModel):
+    endpoint: str
+
+
+class SessionDenyRequest(BaseModel):
+    endpoint: str
+
+
+class PendingConfirmRequest(BaseModel):
+    request_id: str
+
+
 def _require_confirmation(action: str) -> Optional[str]:
     if action not in SENSITIVE_ACTIONS:
         return None
@@ -185,6 +200,15 @@ def _endpoint_allow(path: str):
         raise HTTPException(status_code=403, detail="endpoint not allowed")
 
 
+def _session_allow(session_token: str, path: str):
+    allow = SESSION_ALLOWLIST.get(session_token, set())
+    deny = SESSION_DENYLIST.get(session_token, set())
+    if path in deny:
+        raise HTTPException(status_code=403, detail="endpoint denied for session")
+    if allow and path not in allow:
+        raise HTTPException(status_code=403, detail="endpoint not allowed for session")
+
+
 def _rate_limit():
     now = time.time()
     REQUEST_TIMESTAMPS[:] = [t for t in REQUEST_TIMESTAMPS if now - t < 60]
@@ -217,7 +241,27 @@ def create_session(x_agent_token: Optional[str] = Header(None)):
     _auth(x_agent_token)
     token = str(uuid4())
     SESSION_TOKENS[token] = time.time() + SESSION_TOKEN_TTL_SEC
+    SESSION_ALLOWLIST[token] = set()
+    SESSION_DENYLIST[token] = set()
     return {"ok": True, "session_token": token, "expires_in": SESSION_TOKEN_TTL_SEC}
+
+
+@app.post("/session/allow")
+def session_allow(req: SessionAllowRequest, x_agent_token: Optional[str] = Header(None), x_session_token: Optional[str] = Header(None)):
+    _auth(x_agent_token)
+    _session_auth(x_session_token)
+    allow = SESSION_ALLOWLIST.setdefault(x_session_token, set())
+    allow.add(req.endpoint)
+    return {"ok": True, "allow": list(allow)}
+
+
+@app.post("/session/deny")
+def session_deny(req: SessionDenyRequest, x_agent_token: Optional[str] = Header(None), x_session_token: Optional[str] = Header(None)):
+    _auth(x_agent_token)
+    _session_auth(x_session_token)
+    deny = SESSION_DENYLIST.setdefault(x_session_token, set())
+    deny.add(req.endpoint)
+    return {"ok": True, "deny": list(deny)}
 
 
 @app.post("/confirm")
@@ -230,11 +274,26 @@ def confirm(req: ConfirmRequest, x_agent_token: Optional[str] = Header(None), x_
     raise HTTPException(status_code=404, detail="Invalid action_id")
 
 
+@app.post("/session/confirm")
+def confirm_pending(req: PendingConfirmRequest, x_agent_token: Optional[str] = Header(None), x_session_token: Optional[str] = Header(None)):
+    _auth(x_agent_token)
+    _session_auth(x_session_token)
+    pending = SESSION_PENDING.pop(req.request_id, None)
+    if not pending:
+        raise HTTPException(status_code=404, detail="request_id not found")
+    return {"ok": True, "pending": pending}
+
+
 @app.post("/click")
-def click(req: ClickRequest, x_agent_token: Optional[str] = Header(None), x_session_token: Optional[str] = Header(None)):
+def click(req: ClickRequest, x_agent_token: Optional[str] = Header(None), x_session_token: Optional[str] = Header(None), require_confirm: bool = False):
     _endpoint_allow("/click")
     _auth(x_agent_token)
     _session_auth(x_session_token)
+    _session_allow(x_session_token, "/click")
+    if require_confirm:
+        request_id = str(uuid4())
+        SESSION_PENDING[request_id] = {"endpoint": "/click", "payload": _redact(req.dict())}
+        return {"ok": False, "requires_confirmation": True, "request_id": request_id}
     _rate_limit()
     _cooldown("click")
     pyautogui.click(x=req.x, y=req.y, button=req.button)
@@ -243,10 +302,15 @@ def click(req: ClickRequest, x_agent_token: Optional[str] = Header(None), x_sess
 
 
 @app.post("/type")
-def type_text(req: TypeRequest, x_agent_token: Optional[str] = Header(None), x_session_token: Optional[str] = Header(None)):
+def type_text(req: TypeRequest, x_agent_token: Optional[str] = Header(None), x_session_token: Optional[str] = Header(None), require_confirm: bool = False):
     _endpoint_allow("/type")
     _auth(x_agent_token)
     _session_auth(x_session_token)
+    _session_allow(x_session_token, "/type")
+    if require_confirm:
+        request_id = str(uuid4())
+        SESSION_PENDING[request_id] = {"endpoint": "/type", "payload": _redact(req.dict())}
+        return {"ok": False, "requires_confirmation": True, "request_id": request_id}
     _rate_limit()
     _cooldown("type")
     pyautogui.typewrite(req.text, interval=req.interval)
@@ -255,10 +319,15 @@ def type_text(req: TypeRequest, x_agent_token: Optional[str] = Header(None), x_s
 
 
 @app.post("/press")
-def press_keys(req: PressRequest, action_id: Optional[str] = None, x_agent_token: Optional[str] = Header(None), x_session_token: Optional[str] = Header(None)):
+def press_keys(req: PressRequest, action_id: Optional[str] = None, x_agent_token: Optional[str] = Header(None), x_session_token: Optional[str] = Header(None), require_confirm: bool = False):
     _endpoint_allow("/press")
     _auth(x_agent_token)
     _session_auth(x_session_token)
+    _session_allow(x_session_token, "/press")
+    if require_confirm:
+        request_id = str(uuid4())
+        SESSION_PENDING[request_id] = {"endpoint": "/press", "payload": _redact(req.dict())}
+        return {"ok": False, "requires_confirmation": True, "request_id": request_id}
     _rate_limit()
     _cooldown("press")
     if "press" in SENSITIVE_ACTIONS and not (action_id and _consume_confirmation(action_id, "press")):
@@ -270,10 +339,15 @@ def press_keys(req: PressRequest, action_id: Optional[str] = None, x_agent_token
 
 
 @app.post("/open_app")
-def open_app(req: OpenAppRequest, action_id: Optional[str] = None, x_agent_token: Optional[str] = Header(None), x_session_token: Optional[str] = Header(None)):
+def open_app(req: OpenAppRequest, action_id: Optional[str] = None, x_agent_token: Optional[str] = Header(None), x_session_token: Optional[str] = Header(None), require_confirm: bool = False):
     _endpoint_allow("/open_app")
     _auth(x_agent_token)
     _session_auth(x_session_token)
+    _session_allow(x_session_token, "/open_app")
+    if require_confirm:
+        request_id = str(uuid4())
+        SESSION_PENDING[request_id] = {"endpoint": "/open_app", "payload": _redact(req.dict())}
+        return {"ok": False, "requires_confirmation": True, "request_id": request_id}
     _rate_limit()
     _cooldown("open_app")
     if req.name not in ALLOWED_APPS:
@@ -290,10 +364,15 @@ def open_app(req: OpenAppRequest, action_id: Optional[str] = None, x_agent_token
 
 
 @app.post("/run_applescript")
-def run_applescript(req: AppleScriptRequest, action_id: Optional[str] = None, x_agent_token: Optional[str] = Header(None), x_session_token: Optional[str] = Header(None)):
+def run_applescript(req: AppleScriptRequest, action_id: Optional[str] = None, x_agent_token: Optional[str] = Header(None), x_session_token: Optional[str] = Header(None), require_confirm: bool = False):
     _endpoint_allow("/run_applescript")
     _auth(x_agent_token)
     _session_auth(x_session_token)
+    _session_allow(x_session_token, "/run_applescript")
+    if require_confirm:
+        request_id = str(uuid4())
+        SESSION_PENDING[request_id] = {"endpoint": "/run_applescript", "payload": _redact(req.dict())}
+        return {"ok": False, "requires_confirmation": True, "request_id": request_id}
     _rate_limit()
     _cooldown("run_applescript")
     if "run_applescript" in SENSITIVE_ACTIONS and not (action_id and _consume_confirmation(action_id, "run_applescript")):
@@ -320,10 +399,15 @@ def screenshot():
 
 
 @app.post("/shortcuts/run")
-def run_shortcut(req: ShortcutsRequest, action_id: Optional[str] = None, x_agent_token: Optional[str] = Header(None), x_session_token: Optional[str] = Header(None)):
+def run_shortcut(req: ShortcutsRequest, action_id: Optional[str] = None, x_agent_token: Optional[str] = Header(None), x_session_token: Optional[str] = Header(None), require_confirm: bool = False):
     _endpoint_allow("/shortcuts/run")
     _auth(x_agent_token)
     _session_auth(x_session_token)
+    _session_allow(x_session_token, "/shortcuts/run")
+    if require_confirm:
+        request_id = str(uuid4())
+        SESSION_PENDING[request_id] = {"endpoint": "/shortcuts/run", "payload": _redact(req.dict())}
+        return {"ok": False, "requires_confirmation": True, "request_id": request_id}
     _rate_limit()
     _cooldown("shortcuts_run")
     if "shortcuts_run" in SENSITIVE_ACTIONS and not (action_id and _consume_confirmation(action_id, "shortcuts_run")):
@@ -393,10 +477,15 @@ def _ax_to_node(element, depth: int, max_depth: int):
 
 
 @app.get("/ui_tree/full")
-def ui_tree_full(max_depth: int = 5, x_agent_token: Optional[str] = Header(None), x_session_token: Optional[str] = Header(None)):
+def ui_tree_full(max_depth: int = 5, x_agent_token: Optional[str] = Header(None), x_session_token: Optional[str] = Header(None), require_confirm: bool = False):
     _endpoint_allow("/ui_tree/full")
     _auth(x_agent_token)
     _session_auth(x_session_token)
+    _session_allow(x_session_token, "/ui_tree/full")
+    if require_confirm:
+        request_id = str(uuid4())
+        SESSION_PENDING[request_id] = {"endpoint": "/ui_tree/full", "payload": {"max_depth": max_depth}}
+        return {"ok": False, "requires_confirmation": True, "request_id": request_id}
     _rate_limit()
     """Full accessibility tree for frontmost app (AXUIElement)."""
     if AXUIElementCreateSystemWide is None:
@@ -429,10 +518,15 @@ def _search_tree(node: Dict[str, Any], query: str, results: list):
 
 
 @app.post("/ui_search")
-def ui_search(req: UiSearchRequest, x_agent_token: Optional[str] = Header(None), x_session_token: Optional[str] = Header(None)):
+def ui_search(req: UiSearchRequest, x_agent_token: Optional[str] = Header(None), x_session_token: Optional[str] = Header(None), require_confirm: bool = False):
     _endpoint_allow("/ui_search")
     _auth(x_agent_token)
     _session_auth(x_session_token)
+    _session_allow(x_session_token, "/ui_search")
+    if require_confirm:
+        request_id = str(uuid4())
+        SESSION_PENDING[request_id] = {"endpoint": "/ui_search", "payload": _redact(req.dict())}
+        return {"ok": False, "requires_confirmation": True, "request_id": request_id}
     _rate_limit()
     if AXUIElementCreateSystemWide is None:
         raise HTTPException(status_code=400, detail="pyobjc/Quartz not available")
@@ -451,10 +545,15 @@ def ui_search(req: UiSearchRequest, x_agent_token: Optional[str] = Header(None),
 
 
 @app.post("/ui_click_text")
-def ui_click_text(req: UiSearchRequest, action_id: Optional[str] = None, x_agent_token: Optional[str] = Header(None), x_session_token: Optional[str] = Header(None)):
+def ui_click_text(req: UiSearchRequest, action_id: Optional[str] = None, x_agent_token: Optional[str] = Header(None), x_session_token: Optional[str] = Header(None), require_confirm: bool = False):
     _endpoint_allow("/ui_click_text")
     _auth(x_agent_token)
     _session_auth(x_session_token)
+    _session_allow(x_session_token, "/ui_click_text")
+    if require_confirm:
+        request_id = str(uuid4())
+        SESSION_PENDING[request_id] = {"endpoint": "/ui_click_text", "payload": _redact(req.dict())}
+        return {"ok": False, "requires_confirmation": True, "request_id": request_id}
     _rate_limit()
     _cooldown("ui_click")
     if "press" in SENSITIVE_ACTIONS and not (action_id and _consume_confirmation(action_id, "press")):
@@ -475,10 +574,15 @@ def ui_click_text(req: UiSearchRequest, action_id: Optional[str] = None, x_agent
 
 
 @app.post("/ui_click")
-def ui_click(req: UiActionRequest, action_id: Optional[str] = None, x_agent_token: Optional[str] = Header(None), x_session_token: Optional[str] = Header(None)):
+def ui_click(req: UiActionRequest, action_id: Optional[str] = None, x_agent_token: Optional[str] = Header(None), x_session_token: Optional[str] = Header(None), require_confirm: bool = False):
     _endpoint_allow("/ui_click")
     _auth(x_agent_token)
     _session_auth(x_session_token)
+    _session_allow(x_session_token, "/ui_click")
+    if require_confirm:
+        request_id = str(uuid4())
+        SESSION_PENDING[request_id] = {"endpoint": "/ui_click", "payload": _redact(req.dict())}
+        return {"ok": False, "requires_confirmation": True, "request_id": request_id}
     _rate_limit()
     _cooldown("ui_click")
     if "press" in SENSITIVE_ACTIONS and not (action_id and _consume_confirmation(action_id, "press")):
@@ -499,10 +603,15 @@ def ui_click(req: UiActionRequest, action_id: Optional[str] = None, x_agent_toke
 
 
 @app.post("/ui_set")
-def ui_set(req: UiActionRequest, x_agent_token: Optional[str] = Header(None), x_session_token: Optional[str] = Header(None)):
+def ui_set(req: UiActionRequest, x_agent_token: Optional[str] = Header(None), x_session_token: Optional[str] = Header(None), require_confirm: bool = False):
     _endpoint_allow("/ui_set")
     _auth(x_agent_token)
     _session_auth(x_session_token)
+    _session_allow(x_session_token, "/ui_set")
+    if require_confirm:
+        request_id = str(uuid4())
+        SESSION_PENDING[request_id] = {"endpoint": "/ui_set", "payload": _redact(req.dict())}
+        return {"ok": False, "requires_confirmation": True, "request_id": request_id}
     _rate_limit()
     element = UI_ELEMENT_INDEX.get(req.element_id)
     if element is None:
@@ -521,10 +630,15 @@ def ui_set(req: UiActionRequest, x_agent_token: Optional[str] = Header(None), x_
 
 
 @app.post("/ui_focus")
-def ui_focus(req: UiActionRequest, x_agent_token: Optional[str] = Header(None), x_session_token: Optional[str] = Header(None)):
+def ui_focus(req: UiActionRequest, x_agent_token: Optional[str] = Header(None), x_session_token: Optional[str] = Header(None), require_confirm: bool = False):
     _endpoint_allow("/ui_focus")
     _auth(x_agent_token)
     _session_auth(x_session_token)
+    _session_allow(x_session_token, "/ui_focus")
+    if require_confirm:
+        request_id = str(uuid4())
+        SESSION_PENDING[request_id] = {"endpoint": "/ui_focus", "payload": _redact(req.dict())}
+        return {"ok": False, "requires_confirmation": True, "request_id": request_id}
     _rate_limit()
     element = UI_ELEMENT_INDEX.get(req.element_id)
     if element is None:
@@ -540,10 +654,15 @@ def ui_focus(req: UiActionRequest, x_agent_token: Optional[str] = Header(None), 
 
 
 @app.post("/ui_scroll")
-def ui_scroll(req: UiActionRequest, x_agent_token: Optional[str] = Header(None), x_session_token: Optional[str] = Header(None)):
+def ui_scroll(req: UiActionRequest, x_agent_token: Optional[str] = Header(None), x_session_token: Optional[str] = Header(None), require_confirm: bool = False):
     _endpoint_allow("/ui_scroll")
     _auth(x_agent_token)
     _session_auth(x_session_token)
+    _session_allow(x_session_token, "/ui_scroll")
+    if require_confirm:
+        request_id = str(uuid4())
+        SESSION_PENDING[request_id] = {"endpoint": "/ui_scroll", "payload": _redact(req.dict())}
+        return {"ok": False, "requires_confirmation": True, "request_id": request_id}
     _rate_limit()
     element = UI_ELEMENT_INDEX.get(req.element_id)
     if element is None:

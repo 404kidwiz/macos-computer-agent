@@ -6,6 +6,10 @@
   "rate_limit_per_minute": 60,
   "endpoint_allowlist": [
     "/health",
+    "/session",
+    "/session/allow",
+    "/session/deny",
+    "/session/confirm",
     "/screen",
     "/cursor",
     "/screenshot",
