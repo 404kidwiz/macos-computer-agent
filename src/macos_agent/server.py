@@ -493,11 +493,23 @@ def _ax_to_node(element, depth: int, max_depth: int):
     }
     if depth >= max_depth:
         return node
+
     children = _ax_get_attr(element, kAXChildrenAttribute)
     if children:
         for child in children:
             node["children"].append(_ax_to_node(child, depth + 1, max_depth))
     return node
+
+
+def _ax_tree_from_app(app, max_depth: int):
+    # Prefer windows for more reliable traversal
+    windows = _ax_get_attr(app, "AXWindows")
+    if windows:
+        return {
+            "role": "AXApplication",
+            "children": [_ax_to_node(w, 1, max_depth) for w in windows],
+        }
+    return _ax_to_node(app, 0, max_depth)
 
 
 @app.get("/ui_tree/full")
@@ -525,7 +537,7 @@ def ui_tree_full(max_depth: int = 5, x_agent_token: Optional[str] = Header(None)
     pid = front_app.processIdentifier()
     app = AXUIElementCreateApplication(pid)
 
-    tree = _ax_to_node(app, 0, max_depth)
+    tree = _ax_tree_from_app(app, max_depth)
     _audit("ui_tree_full", {"max_depth": max_depth, "pid": int(pid)})
     return {"ok": True, "tree": tree}
 
