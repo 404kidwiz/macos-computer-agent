@@ -21,6 +21,19 @@ try:
 except Exception:  # pragma: no cover
     pytesseract = None  # type: ignore
 
+try:
+    from Quartz import (
+        AXUIElementCreateSystemWide,
+        AXUIElementCopyAttributeValue,
+        kAXFocusedApplicationAttribute,
+        kAXChildrenAttribute,
+        kAXRoleAttribute,
+        kAXTitleAttribute,
+        kAXValueAttribute,
+    )
+except Exception:  # pragma: no cover
+    AXUIElementCreateSystemWide = None  # type: ignore
+
 app = FastAPI(title="macOS Computer Agent", version="0.1.0")
 
 # In-memory confirmation store (local-only)
@@ -195,6 +208,47 @@ def ui_tree():
         return {"ok": True, "raw": output}
     except subprocess.CalledProcessError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+def _ax_get_attr(element, attr):
+    try:
+        return AXUIElementCopyAttributeValue(element, attr, None)
+    except Exception:
+        return None
+
+
+def _ax_to_node(element, depth: int, max_depth: int):
+    role = _ax_get_attr(element, kAXRoleAttribute)
+    title = _ax_get_attr(element, kAXTitleAttribute)
+    value = _ax_get_attr(element, kAXValueAttribute)
+    node = {
+        "role": str(role) if role is not None else None,
+        "title": str(title) if title is not None else None,
+        "value": str(value) if value is not None else None,
+        "children": [],
+    }
+    if depth >= max_depth:
+        return node
+    children = _ax_get_attr(element, kAXChildrenAttribute)
+    if children:
+        for child in children:
+            node["children"].append(_ax_to_node(child, depth + 1, max_depth))
+    return node
+
+
+@app.get("/ui_tree/full")
+def ui_tree_full(max_depth: int = 5):
+    """Full accessibility tree for frontmost app (AXUIElement)."""
+    if AXUIElementCreateSystemWide is None:
+        raise HTTPException(status_code=400, detail="pyobjc/Quartz not available")
+
+    system = AXUIElementCreateSystemWide()
+    app = _ax_get_attr(system, kAXFocusedApplicationAttribute)
+    if app is None:
+        raise HTTPException(status_code=404, detail="No focused application")
+
+    tree = _ax_to_node(app, 0, max_depth)
+    return {"ok": True, "tree": tree}
 
 
 @app.post("/ocr")

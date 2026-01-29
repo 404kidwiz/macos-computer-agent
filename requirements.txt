@@ -4,3 +4,4 @@ pyautogui
 mss
 Pillow
 pytesseract
+pyobjc

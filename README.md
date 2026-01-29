@@ -37,6 +37,7 @@ uvicorn macos_agent.server:app --host 127.0.0.1 --port 8765
 - `POST /run_applescript` `{script:"..."}` (requires confirmation)
 - `POST /shortcuts/run` `{name:"Shortcut Name"}` (requires confirmation)
 - `GET /ui_tree` (best-effort frontmost app info)
+- `GET /ui_tree/full` (full AX UI tree, use `?max_depth=5`)
 - `POST /ocr` `{x,y,width,height}` (optional crop)
 - `POST /confirm` `{action_id:"..."}`
 
