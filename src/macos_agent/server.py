@@ -1,28 +1,138 @@
-"""Minimal local-only agent server (placeholder)."""
+"""Local-only macOS automation agent server."""
 
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from __future__ import annotations
+
+import base64
+import io
 import json
+import subprocess
+from typing import Optional
 
-class Handler(BaseHTTPRequestHandler):
-    def _send(self, code=200, payload=None):
-        self.send_response(code)
-        self.send_header("Content-Type", "application/json")
-        self.end_headers()
-        if payload is None:
-            payload = {}
-        self.wfile.write(json.dumps(payload).encode("utf-8"))
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
 
-    def do_GET(self):
-        if self.path == "/health":
-            return self._send(200, {"ok": True})
-        return self._send(404, {"error": "not_found"})
+import pyautogui
+import mss
+from PIL import Image
 
+try:
+    import pytesseract
+except Exception:  # pragma: no cover
+    pytesseract = None  # type: ignore
 
-def main():
-    server = HTTPServer(("127.0.0.1", 8765), Handler)
-    print("macOS agent running on http://127.0.0.1:8765")
-    server.serve_forever()
+app = FastAPI(title="macOS Computer Agent", version="0.1.0")
 
 
-if __name__ == "__main__":
-    main()
+class ClickRequest(BaseModel):
+    x: int
+    y: int
+    button: str = "left"
+
+
+class TypeRequest(BaseModel):
+    text: str
+    interval: float = 0.0
+
+
+class PressRequest(BaseModel):
+    keys: list[str]
+
+
+class OpenAppRequest(BaseModel):
+    name: str
+
+
+class AppleScriptRequest(BaseModel):
+    script: str
+
+
+class OcrRequest(BaseModel):
+    x: Optional[int] = None
+    y: Optional[int] = None
+    width: Optional[int] = None
+    height: Optional[int] = None
+
+
+@app.get("/health")
+def health():
+    return {"ok": True}
+
+
+@app.post("/click")
+def click(req: ClickRequest):
+    pyautogui.click(x=req.x, y=req.y, button=req.button)
+    return {"ok": True}
+
+
+@app.post("/type")
+def type_text(req: TypeRequest):
+    pyautogui.typewrite(req.text, interval=req.interval)
+    return {"ok": True}
+
+
+@app.post("/press")
+def press_keys(req: PressRequest):
+    pyautogui.hotkey(*req.keys)
+    return {"ok": True}
+
+
+@app.post("/open_app")
+def open_app(req: OpenAppRequest):
+    try:
+        subprocess.check_call(["open", "-a", req.name])
+        return {"ok": True}
+    except subprocess.CalledProcessError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/run_applescript")
+def run_applescript(req: AppleScriptRequest):
+    try:
+        result = subprocess.check_output(["osascript", "-e", req.script])
+        return {"ok": True, "output": result.decode("utf-8").strip()}
+    except subprocess.CalledProcessError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/screenshot")
+def screenshot():
+    with mss.mss() as sct:
+        monitor = sct.monitors[1]
+        sct_img = sct.grab(monitor)
+        img = Image.frombytes("RGB", sct_img.size, sct_img.rgb)
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+        return {"ok": True, "png_base64": b64}
+
+
+@app.post("/ocr")
+def ocr(req: OcrRequest):
+    if pytesseract is None:
+        raise HTTPException(status_code=400, detail="pytesseract not installed")
+
+    with mss.mss() as sct:
+        monitor = sct.monitors[1]
+        if req.width and req.height and req.x is not None and req.y is not None:
+            monitor = {
+                "left": req.x,
+                "top": req.y,
+                "width": req.width,
+                "height": req.height,
+            }
+        sct_img = sct.grab(monitor)
+        img = Image.frombytes("RGB", sct_img.size, sct_img.rgb)
+        text = pytesseract.image_to_string(img)
+        return {"ok": True, "text": text}
+
+
+@app.get("/cursor")
+def cursor_position():
+    x, y = pyautogui.position()
+    return {"ok": True, "x": x, "y": y}
+
+
+@app.get("/screen")
+def screen_size():
+    width, height = pyautogui.size()
+    return {"ok": True, "width": width, "height": height}
