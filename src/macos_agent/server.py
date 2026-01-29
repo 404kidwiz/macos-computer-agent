@@ -6,7 +6,7 @@ import base64
 import io
 import json
 import subprocess
-from typing import Optional, Dict
+from typing import Optional, Dict, Any
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException
@@ -47,6 +47,12 @@ SENSITIVE_ACTIONS = {
     "shortcuts_run",
 }
 
+# Simple allowlist (expand as needed)
+ALLOWED_APPS = {"Terminal", "Visual Studio Code", "Safari", "Google Chrome"}
+
+# UI element store for click-by-id
+UI_ELEMENT_INDEX: Dict[str, Any] = {}
+
 
 class ClickRequest(BaseModel):
     x: int
@@ -84,6 +90,11 @@ class ConfirmRequest(BaseModel):
 
 class ShortcutsRequest(BaseModel):
     name: str
+
+
+class UiSearchRequest(BaseModel):
+    query: str
+    max_depth: int = 5
 
 
 def _require_confirmation(action: str) -> Optional[str]:
@@ -139,6 +150,8 @@ def press_keys(req: PressRequest, action_id: Optional[str] = None):
 
 @app.post("/open_app")
 def open_app(req: OpenAppRequest, action_id: Optional[str] = None):
+    if req.name not in ALLOWED_APPS:
+        raise HTTPException(status_code=403, detail="App not in allowlist")
     if "open_app" in SENSITIVE_ACTIONS and not (action_id and _consume_confirmation(action_id, "open_app")):
         pending = _require_confirmation("open_app")
         return {"ok": False, "requires_confirmation": True, "action_id": pending}
@@ -221,7 +234,11 @@ def _ax_to_node(element, depth: int, max_depth: int):
     role = _ax_get_attr(element, kAXRoleAttribute)
     title = _ax_get_attr(element, kAXTitleAttribute)
     value = _ax_get_attr(element, kAXValueAttribute)
+    element_id = str(uuid4())
+    UI_ELEMENT_INDEX[element_id] = element
+
     node = {
+        "id": element_id,
         "role": str(role) if role is not None else None,
         "title": str(title) if title is not None else None,
         "value": str(value) if value is not None else None,
@@ -242,6 +259,7 @@ def ui_tree_full(max_depth: int = 5):
     if AXUIElementCreateSystemWide is None:
         raise HTTPException(status_code=400, detail="pyobjc/Quartz not available")
 
+    UI_ELEMENT_INDEX.clear()
     system = AXUIElementCreateSystemWide()
     app = _ax_get_attr(system, kAXFocusedApplicationAttribute)
     if app is None:
@@ -249,6 +267,57 @@ def ui_tree_full(max_depth: int = 5):
 
     tree = _ax_to_node(app, 0, max_depth)
     return {"ok": True, "tree": tree}
+
+
+def _search_tree(node: Dict[str, Any], query: str, results: list):
+    hay = " ".join(
+        filter(None, [node.get("role"), node.get("title"), node.get("value")])
+    ).lower()
+    if query in hay:
+        results.append({
+            "id": node.get("id"),
+            "role": node.get("role"),
+            "title": node.get("title"),
+            "value": node.get("value"),
+        })
+    for child in node.get("children", []):
+        _search_tree(child, query, results)
+
+
+@app.post("/ui_search")
+def ui_search(req: UiSearchRequest):
+    if AXUIElementCreateSystemWide is None:
+        raise HTTPException(status_code=400, detail="pyobjc/Quartz not available")
+
+    UI_ELEMENT_INDEX.clear()
+    system = AXUIElementCreateSystemWide()
+    app = _ax_get_attr(system, kAXFocusedApplicationAttribute)
+    if app is None:
+        raise HTTPException(status_code=404, detail="No focused application")
+
+    tree = _ax_to_node(app, 0, req.max_depth)
+    results: list = []
+    _search_tree(tree, req.query.lower(), results)
+    return {"ok": True, "results": results}
+
+
+@app.post("/ui_click")
+def ui_click(element_id: str, action_id: Optional[str] = None):
+    if "press" in SENSITIVE_ACTIONS and not (action_id and _consume_confirmation(action_id, "press")):
+        pending = _require_confirmation("press")
+        return {"ok": False, "requires_confirmation": True, "action_id": pending}
+
+    element = UI_ELEMENT_INDEX.get(element_id)
+    if element is None:
+        raise HTTPException(status_code=404, detail="element_id not found; run ui_search or ui_tree/full first")
+
+    try:
+        # Perform AXPress if available
+        from Quartz import AXUIElementPerformAction  # type: ignore
+        AXUIElementPerformAction(element, "AXPress")
+        return {"ok": True}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.post("/ocr")
