@@ -33,14 +33,18 @@ uvicorn macos_agent.server:app --host 127.0.0.1 --port 8765
 - `POST /click` `{x,y,button}`
 - `POST /type` `{text, interval}`
 - `POST /press` `{keys:["cmd","space"]}`
-- `POST /open_app` `{name:"Terminal"}`
-- `POST /run_applescript` `{script:"..."}`
+- `POST /open_app` `{name:"Terminal"}` (requires confirmation)
+- `POST /run_applescript` `{script:"..."}` (requires confirmation)
+- `POST /shortcuts/run` `{name:"Shortcut Name"}` (requires confirmation)
+- `GET /ui_tree` (best-effort frontmost app info)
 - `POST /ocr` `{x,y,width,height}` (optional crop)
+- `POST /confirm` `{action_id:"..."}`
 
 ## Dependencies
 - `pyautogui` (requires Accessibility permission)
 - `mss` + `Pillow` (screen capture)
 - `pytesseract` (OCR; requires system tesseract)
+- `shortcuts` CLI (built-in on macOS)
 
 Install Tesseract (macOS):
 ```bash

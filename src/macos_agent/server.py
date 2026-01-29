@@ -6,7 +6,8 @@ import base64
 import io
 import json
 import subprocess
-from typing import Optional
+from typing import Optional, Dict
+from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
@@ -21,6 +22,17 @@ except Exception:  # pragma: no cover
     pytesseract = None  # type: ignore
 
 app = FastAPI(title="macOS Computer Agent", version="0.1.0")
+
+# In-memory confirmation store (local-only)
+PENDING_CONFIRMATIONS: Dict[str, str] = {}
+
+# Actions that require explicit confirmation
+SENSITIVE_ACTIONS = {
+    "run_applescript",
+    "open_app",
+    "press",
+    "shortcuts_run",
+}
 
 
 class ClickRequest(BaseModel):
@@ -53,9 +65,42 @@ class OcrRequest(BaseModel):
     height: Optional[int] = None
 
 
+class ConfirmRequest(BaseModel):
+    action_id: str
+
+
+class ShortcutsRequest(BaseModel):
+    name: str
+
+
+def _require_confirmation(action: str) -> Optional[str]:
+    if action not in SENSITIVE_ACTIONS:
+        return None
+    action_id = str(uuid4())
+    PENDING_CONFIRMATIONS[action_id] = action
+    return action_id
+
+
+def _consume_confirmation(action_id: str, action: str) -> bool:
+    return PENDING_CONFIRMATIONS.pop(action_id, None) == action
+
+
+def _run_applescript(script: str) -> str:
+    result = subprocess.check_output(["osascript", "-e", script])
+    return result.decode("utf-8").strip()
+
+
 @app.get("/health")
 def health():
     return {"ok": True}
+
+
+@app.post("/confirm")
+def confirm(req: ConfirmRequest):
+    if req.action_id in PENDING_CONFIRMATIONS:
+        action = PENDING_CONFIRMATIONS.pop(req.action_id)
+        return {"ok": True, "action": action}
+    raise HTTPException(status_code=404, detail="Invalid action_id")
 
 
 @app.post("/click")
@@ -71,13 +116,19 @@ def type_text(req: TypeRequest):
 
 
 @app.post("/press")
-def press_keys(req: PressRequest):
+def press_keys(req: PressRequest, action_id: Optional[str] = None):
+    if "press" in SENSITIVE_ACTIONS and not (action_id and _consume_confirmation(action_id, "press")):
+        pending = _require_confirmation("press")
+        return {"ok": False, "requires_confirmation": True, "action_id": pending}
     pyautogui.hotkey(*req.keys)
     return {"ok": True}
 
 
 @app.post("/open_app")
-def open_app(req: OpenAppRequest):
+def open_app(req: OpenAppRequest, action_id: Optional[str] = None):
+    if "open_app" in SENSITIVE_ACTIONS and not (action_id and _consume_confirmation(action_id, "open_app")):
+        pending = _require_confirmation("open_app")
+        return {"ok": False, "requires_confirmation": True, "action_id": pending}
     try:
         subprocess.check_call(["open", "-a", req.name])
         return {"ok": True}
@@ -86,10 +137,13 @@ def open_app(req: OpenAppRequest):
 
 
 @app.post("/run_applescript")
-def run_applescript(req: AppleScriptRequest):
+def run_applescript(req: AppleScriptRequest, action_id: Optional[str] = None):
+    if "run_applescript" in SENSITIVE_ACTIONS and not (action_id and _consume_confirmation(action_id, "run_applescript")):
+        pending = _require_confirmation("run_applescript")
+        return {"ok": False, "requires_confirmation": True, "action_id": pending}
     try:
-        result = subprocess.check_output(["osascript", "-e", req.script])
-        return {"ok": True, "output": result.decode("utf-8").strip()}
+        result = _run_applescript(req.script)
+        return {"ok": True, "output": result}
     except subprocess.CalledProcessError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -104,6 +158,43 @@ def screenshot():
         img.save(buf, format="PNG")
         b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
         return {"ok": True, "png_base64": b64}
+
+
+@app.post("/shortcuts/run")
+def run_shortcut(req: ShortcutsRequest, action_id: Optional[str] = None):
+    if "shortcuts_run" in SENSITIVE_ACTIONS and not (action_id and _consume_confirmation(action_id, "shortcuts_run")):
+        pending = _require_confirmation("shortcuts_run")
+        return {"ok": False, "requires_confirmation": True, "action_id": pending}
+    try:
+        result = subprocess.check_output(["shortcuts", "run", req.name])
+        return {"ok": True, "output": result.decode("utf-8").strip()}
+    except subprocess.CalledProcessError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/ui_tree")
+def ui_tree():
+    """Best-effort UI tree via AppleScript (frontmost app, windows, menu items)."""
+    script = r'''
+    tell application "System Events"
+      set frontApp to first application process whose frontmost is true
+      set appName to name of frontApp
+      set winNames to {}
+      try
+        set winNames to name of windows of frontApp
+      end try
+      set menuItems to {}
+      try
+        set menuItems to name of menu items of menu 1 of menu bar 1 of frontApp
+      end try
+      return "APP:" & appName & "\nWINS:" & (winNames as string) & "\nMENUS:" & (menuItems as string)
+    end tell
+    '''
+    try:
+        output = _run_applescript(script)
+        return {"ok": True, "raw": output}
+    except subprocess.CalledProcessError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.post("/ocr")
