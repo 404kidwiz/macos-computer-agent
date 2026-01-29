@@ -26,15 +26,19 @@ except Exception:  # pragma: no cover
 try:
     from ApplicationServices import (
         AXUIElementCreateSystemWide,
+        AXUIElementCreateApplication,
         AXUIElementCopyAttributeValue,
         AXUIElementPerformAction,
         AXUIElementSetAttributeValue,
+        AXIsProcessTrustedWithOptions,
         kAXFocusedApplicationAttribute,
         kAXChildrenAttribute,
         kAXRoleAttribute,
         kAXTitleAttribute,
         kAXValueAttribute,
+        kAXTrustedCheckOptionPrompt,
     )
+    from AppKit import NSWorkspace
 except Exception:  # pragma: no cover
     AXUIElementCreateSystemWide = None  # type: ignore
     AXUIElementCopyAttributeValue = None  # type: ignore
@@ -239,6 +243,11 @@ def _run_applescript(script: str) -> str:
 @app.get("/health")
 def health():
     return {"ok": True}
+
+
+@app.get("/ax_status")
+def ax_status(prompt: bool = False):
+    return {"ok": True, "trusted": _ax_trusted(prompt=prompt)}
 
 
 @app.post("/session")
@@ -458,6 +467,16 @@ def _ax_get_attr(element, attr):
         return None
 
 
+def _ax_trusted(prompt: bool = False) -> bool:
+    if AXUIElementCreateSystemWide is None:
+        return False
+    try:
+        opts = {kAXTrustedCheckOptionPrompt: bool(prompt)}
+        return bool(AXIsProcessTrustedWithOptions(opts))
+    except Exception:
+        return False
+
+
 def _ax_to_node(element, depth: int, max_depth: int):
     role = _ax_get_attr(element, kAXRoleAttribute)
     title = _ax_get_attr(element, kAXTitleAttribute)
@@ -482,7 +501,7 @@ def _ax_to_node(element, depth: int, max_depth: int):
 
 
 @app.get("/ui_tree/full")
-def ui_tree_full(max_depth: int = 5, x_agent_token: Optional[str] = Header(None), x_session_token: Optional[str] = Header(None), require_confirm: bool = False):
+def ui_tree_full(max_depth: int = 5, x_agent_token: Optional[str] = Header(None), x_session_token: Optional[str] = Header(None), require_confirm: bool = False, prompt: bool = False):
     _endpoint_allow("/ui_tree/full")
     _auth(x_agent_token)
     _session_auth(x_session_token)
@@ -496,14 +515,18 @@ def ui_tree_full(max_depth: int = 5, x_agent_token: Optional[str] = Header(None)
     if AXUIElementCreateSystemWide is None:
         raise HTTPException(status_code=400, detail="pyobjc/Quartz not available")
 
+    if not _ax_trusted(prompt=prompt):
+        raise HTTPException(status_code=403, detail="AX not trusted; enable Accessibility for Python.app/Terminal")
+
     UI_ELEMENT_INDEX.clear()
-    system = AXUIElementCreateSystemWide()
-    app = _ax_get_attr(system, kAXFocusedApplicationAttribute)
-    if app is None:
-        raise HTTPException(status_code=404, detail="No focused application")
+    front_app = NSWorkspace.sharedWorkspace().frontmostApplication()
+    if front_app is None:
+        raise HTTPException(status_code=404, detail="No frontmost application")
+    pid = front_app.processIdentifier()
+    app = AXUIElementCreateApplication(pid)
 
     tree = _ax_to_node(app, 0, max_depth)
-    _audit("ui_tree_full", {"max_depth": max_depth})
+    _audit("ui_tree_full", {"max_depth": max_depth, "pid": int(pid)})
     return {"ok": True, "tree": tree}
 
 
