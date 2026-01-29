@@ -39,7 +39,10 @@ uvicorn macos_agent.server:app --host 127.0.0.1 --port 8765
 - `GET /ui_tree` (best-effort frontmost app info)
 - `GET /ui_tree/full` (full AX UI tree, use `?max_depth=5`)
 - `POST /ui_search` `{query:"...", max_depth:5}`
-- `POST /ui_click` `?element_id=...&action_id=...`
+- `POST /ui_click` `{element_id:"..."}` (confirmation required)
+- `POST /ui_set` `{element_id:"...", value:"..."}`
+- `POST /ui_focus` `{element_id:"..."}`
+- `POST /ui_scroll` `{element_id:"..."}`
 - `POST /ocr` `{x,y,width,height}` (optional crop)
 - `POST /confirm` `{action_id:"..."}`
 
@@ -56,9 +59,9 @@ brew install tesseract
 
 ## Security & Safety
 - Local-only API
-- Add allowlist + confirmations for sensitive operations (planned)
-- Audit logs (planned)
+- Allowlist (config.json)
+- Confirmations for sensitive operations
+- Audit logs (`agent_audit.log`)
 
 ## Roadmap
-- Phase 2: Accessibility UI tree + safer high-level actions
 - Phase 3: Remote control (opt-in)

@@ -8,6 +8,7 @@ import json
 import subprocess
 from typing import Optional, Dict, Any
 from uuid import uuid4
+import os
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
@@ -47,11 +48,30 @@ SENSITIVE_ACTIONS = {
     "shortcuts_run",
 }
 
-# Simple allowlist (expand as needed)
+CONFIG_PATH = os.getenv("AGENT_CONFIG", "config.json")
+
+# Default allowlist (overridden by config)
 ALLOWED_APPS = {"Terminal", "Visual Studio Code", "Safari", "Google Chrome"}
 
 # UI element store for click-by-id
 UI_ELEMENT_INDEX: Dict[str, Any] = {}
+
+# Audit log
+AUDIT_LOG = "agent_audit.log"
+
+
+def _load_config():
+    global ALLOWED_APPS, AUDIT_LOG
+    try:
+        with open(CONFIG_PATH, "r") as f:
+            cfg = json.load(f)
+            ALLOWED_APPS = set(cfg.get("allowed_apps", list(ALLOWED_APPS)))
+            AUDIT_LOG = cfg.get("audit_log", AUDIT_LOG)
+    except Exception:
+        pass
+
+
+_load_config()
 
 
 class ClickRequest(BaseModel):
@@ -97,6 +117,11 @@ class UiSearchRequest(BaseModel):
     max_depth: int = 5
 
 
+class UiActionRequest(BaseModel):
+    element_id: str
+    value: Optional[str] = None
+
+
 def _require_confirmation(action: str) -> Optional[str]:
     if action not in SENSITIVE_ACTIONS:
         return None
@@ -107,6 +132,14 @@ def _require_confirmation(action: str) -> Optional[str]:
 
 def _consume_confirmation(action_id: str, action: str) -> bool:
     return PENDING_CONFIRMATIONS.pop(action_id, None) == action
+
+
+def _audit(action: str, payload: Dict[str, Any]):
+    try:
+        with open(AUDIT_LOG, "a") as f:
+            f.write(json.dumps({"action": action, "payload": payload}) + "\n")
+    except Exception:
+        pass
 
 
 def _run_applescript(script: str) -> str:
@@ -130,12 +163,14 @@ def confirm(req: ConfirmRequest):
 @app.post("/click")
 def click(req: ClickRequest):
     pyautogui.click(x=req.x, y=req.y, button=req.button)
+    _audit("click", req.dict())
     return {"ok": True}
 
 
 @app.post("/type")
 def type_text(req: TypeRequest):
     pyautogui.typewrite(req.text, interval=req.interval)
+    _audit("type", req.dict())
     return {"ok": True}
 
 
@@ -145,6 +180,7 @@ def press_keys(req: PressRequest, action_id: Optional[str] = None):
         pending = _require_confirmation("press")
         return {"ok": False, "requires_confirmation": True, "action_id": pending}
     pyautogui.hotkey(*req.keys)
+    _audit("press", req.dict())
     return {"ok": True}
 
 
@@ -157,6 +193,7 @@ def open_app(req: OpenAppRequest, action_id: Optional[str] = None):
         return {"ok": False, "requires_confirmation": True, "action_id": pending}
     try:
         subprocess.check_call(["open", "-a", req.name])
+        _audit("open_app", req.dict())
         return {"ok": True}
     except subprocess.CalledProcessError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -169,6 +206,7 @@ def run_applescript(req: AppleScriptRequest, action_id: Optional[str] = None):
         return {"ok": False, "requires_confirmation": True, "action_id": pending}
     try:
         result = _run_applescript(req.script)
+        _audit("run_applescript", req.dict())
         return {"ok": True, "output": result}
     except subprocess.CalledProcessError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -193,6 +231,7 @@ def run_shortcut(req: ShortcutsRequest, action_id: Optional[str] = None):
         return {"ok": False, "requires_confirmation": True, "action_id": pending}
     try:
         result = subprocess.check_output(["shortcuts", "run", req.name])
+        _audit("shortcuts_run", req.dict())
         return {"ok": True, "output": result.decode("utf-8").strip()}
     except subprocess.CalledProcessError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -266,6 +305,7 @@ def ui_tree_full(max_depth: int = 5):
         raise HTTPException(status_code=404, detail="No focused application")
 
     tree = _ax_to_node(app, 0, max_depth)
+    _audit("ui_tree_full", {"max_depth": max_depth})
     return {"ok": True, "tree": tree}
 
 
@@ -298,23 +338,72 @@ def ui_search(req: UiSearchRequest):
     tree = _ax_to_node(app, 0, req.max_depth)
     results: list = []
     _search_tree(tree, req.query.lower(), results)
+    _audit("ui_search", req.dict())
     return {"ok": True, "results": results}
 
 
 @app.post("/ui_click")
-def ui_click(element_id: str, action_id: Optional[str] = None):
+def ui_click(req: UiActionRequest, action_id: Optional[str] = None):
     if "press" in SENSITIVE_ACTIONS and not (action_id and _consume_confirmation(action_id, "press")):
         pending = _require_confirmation("press")
         return {"ok": False, "requires_confirmation": True, "action_id": pending}
 
-    element = UI_ELEMENT_INDEX.get(element_id)
+    element = UI_ELEMENT_INDEX.get(req.element_id)
     if element is None:
         raise HTTPException(status_code=404, detail="element_id not found; run ui_search or ui_tree/full first")
 
     try:
-        # Perform AXPress if available
         from Quartz import AXUIElementPerformAction  # type: ignore
         AXUIElementPerformAction(element, "AXPress")
+        _audit("ui_click", {"element_id": req.element_id})
+        return {"ok": True}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/ui_set")
+def ui_set(req: UiActionRequest):
+    element = UI_ELEMENT_INDEX.get(req.element_id)
+    if element is None:
+        raise HTTPException(status_code=404, detail="element_id not found; run ui_search or ui_tree/full first")
+
+    if req.value is None:
+        raise HTTPException(status_code=400, detail="value required")
+
+    try:
+        from Quartz import AXUIElementSetAttributeValue  # type: ignore
+        AXUIElementSetAttributeValue(element, "AXValue", req.value)
+        _audit("ui_set", {"element_id": req.element_id, "value": req.value})
+        return {"ok": True}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/ui_focus")
+def ui_focus(req: UiActionRequest):
+    element = UI_ELEMENT_INDEX.get(req.element_id)
+    if element is None:
+        raise HTTPException(status_code=404, detail="element_id not found; run ui_search or ui_tree/full first")
+
+    try:
+        from Quartz import AXUIElementSetAttributeValue  # type: ignore
+        AXUIElementSetAttributeValue(element, "AXFocused", True)
+        _audit("ui_focus", {"element_id": req.element_id})
+        return {"ok": True}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/ui_scroll")
+def ui_scroll(req: UiActionRequest):
+    element = UI_ELEMENT_INDEX.get(req.element_id)
+    if element is None:
+        raise HTTPException(status_code=404, detail="element_id not found; run ui_search or ui_tree/full first")
+
+    try:
+        from Quartz import AXUIElementPerformAction  # type: ignore
+        AXUIElementPerformAction(element, "AXScrollDown")
+        _audit("ui_scroll", {"element_id": req.element_id})
         return {"ok": True}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))

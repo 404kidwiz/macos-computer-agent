@@ -1,0 +1,4 @@
+{
+  "allowed_apps": ["Terminal", "Visual Studio Code", "Safari", "Google Chrome"],
+  "audit_log": "agent_audit.log"
+}
