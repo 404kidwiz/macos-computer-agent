@@ -512,6 +512,29 @@ def _ax_tree_from_app(app, max_depth: int):
     return _ax_to_node(app, 0, max_depth)
 
 
+def _applescript_ui_fallback() -> Dict[str, Any]:
+    script = r'''
+    tell application "System Events"
+      set frontApp to first application process whose frontmost is true
+      set appName to name of frontApp
+      set winNames to {}
+      try
+        set winNames to name of windows of frontApp
+      end try
+      set menuItems to {}
+      try
+        set menuItems to name of menu items of menu 1 of menu bar 1 of frontApp
+      end try
+      return "APP:" & appName & "\nWINS:" & (winNames as string) & "\nMENUS:" & (menuItems as string)
+    end tell
+    '''
+    try:
+        output = _run_applescript(script)
+        return {"applescript_raw": output}
+    except Exception:
+        return {"applescript_raw": None}
+
+
 @app.get("/ui_tree/full")
 def ui_tree_full(max_depth: int = 5, x_agent_token: Optional[str] = Header(None), x_session_token: Optional[str] = Header(None), require_confirm: bool = False, prompt: bool = False):
     _endpoint_allow("/ui_tree/full")
@@ -538,8 +561,9 @@ def ui_tree_full(max_depth: int = 5, x_agent_token: Optional[str] = Header(None)
     app = AXUIElementCreateApplication(pid)
 
     tree = _ax_tree_from_app(app, max_depth)
+    fallback = _applescript_ui_fallback()
     _audit("ui_tree_full", {"max_depth": max_depth, "pid": int(pid)})
-    return {"ok": True, "tree": tree}
+    return {"ok": True, "tree": tree, "fallback": fallback}
 
 
 def _search_tree(node: Dict[str, Any], query: str, results: list):
