@@ -1,4 +1,14 @@
 {
   "allowed_apps": ["Terminal", "Visual Studio Code", "Safari", "Google Chrome"],
-  "audit_log": "agent_audit.log"
+  "audit_log": "agent_audit.log",
+  "token": "change-me",
+  "rate_limit_per_minute": 60,
+  "cooldowns": {
+    "click": 0.1,
+    "press": 0.2,
+    "open_app": 1.0,
+    "run_applescript": 1.0,
+    "shortcuts_run": 1.0,
+    "ui_click": 0.2
+  }
 }

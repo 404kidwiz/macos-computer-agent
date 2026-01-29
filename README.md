@@ -39,6 +39,7 @@ uvicorn macos_agent.server:app --host 127.0.0.1 --port 8765
 - `GET /ui_tree` (best-effort frontmost app info)
 - `GET /ui_tree/full` (full AX UI tree, use `?max_depth=5`)
 - `POST /ui_search` `{query:"...", max_depth:5}`
+- `POST /ui_click_text` `{query:"...", max_depth:5}` (confirmation required)
 - `POST /ui_click` `{element_id:"..."}` (confirmation required)
 - `POST /ui_set` `{element_id:"...", value:"..."}`
 - `POST /ui_focus` `{element_id:"..."}`
@@ -61,6 +62,8 @@ brew install tesseract
 - Local-only API
 - Allowlist (config.json)
 - Confirmations for sensitive operations
+- Token auth via `X-Agent-Token`
+- Rate limiting + cooldowns (config.json)
 - Audit logs (`agent_audit.log`)
 
 ## Roadmap

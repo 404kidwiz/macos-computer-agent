@@ -9,8 +9,9 @@ import subprocess
 from typing import Optional, Dict, Any
 from uuid import uuid4
 import os
+import time
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header
 from pydantic import BaseModel
 
 import pyautogui
@@ -59,14 +60,24 @@ UI_ELEMENT_INDEX: Dict[str, Any] = {}
 # Audit log
 AUDIT_LOG = "agent_audit.log"
 
+# Auth token + safety controls
+AGENT_TOKEN: Optional[str] = None
+RATE_LIMIT_PER_MINUTE = 60
+COOLDOWNS: Dict[str, float] = {}
+LAST_ACTION: Dict[str, float] = {}
+REQUEST_TIMESTAMPS: list[float] = []
+
 
 def _load_config():
-    global ALLOWED_APPS, AUDIT_LOG
+    global ALLOWED_APPS, AUDIT_LOG, AGENT_TOKEN, RATE_LIMIT_PER_MINUTE, COOLDOWNS
     try:
         with open(CONFIG_PATH, "r") as f:
             cfg = json.load(f)
             ALLOWED_APPS = set(cfg.get("allowed_apps", list(ALLOWED_APPS)))
             AUDIT_LOG = cfg.get("audit_log", AUDIT_LOG)
+            AGENT_TOKEN = cfg.get("token")
+            RATE_LIMIT_PER_MINUTE = cfg.get("rate_limit_per_minute", RATE_LIMIT_PER_MINUTE)
+            COOLDOWNS = cfg.get("cooldowns", {})
     except Exception:
         pass
 
@@ -137,9 +148,31 @@ def _consume_confirmation(action_id: str, action: str) -> bool:
 def _audit(action: str, payload: Dict[str, Any]):
     try:
         with open(AUDIT_LOG, "a") as f:
-            f.write(json.dumps({"action": action, "payload": payload}) + "\n")
+            f.write(json.dumps({"ts": time.time(), "action": action, "payload": payload}) + "\n")
     except Exception:
         pass
+
+
+def _auth(token: Optional[str]):
+    if AGENT_TOKEN and token != AGENT_TOKEN:
+        raise HTTPException(status_code=401, detail="invalid token")
+
+
+def _rate_limit():
+    now = time.time()
+    REQUEST_TIMESTAMPS[:] = [t for t in REQUEST_TIMESTAMPS if now - t < 60]
+    if len(REQUEST_TIMESTAMPS) >= RATE_LIMIT_PER_MINUTE:
+        raise HTTPException(status_code=429, detail="rate limit exceeded")
+    REQUEST_TIMESTAMPS.append(now)
+
+
+def _cooldown(action: str):
+    now = time.time()
+    cooldown = float(COOLDOWNS.get(action, 0))
+    last = LAST_ACTION.get(action, 0)
+    if cooldown > 0 and (now - last) < cooldown:
+        raise HTTPException(status_code=429, detail=f"cooldown active for {action}")
+    LAST_ACTION[action] = now
 
 
 def _run_applescript(script: str) -> str:
@@ -161,21 +194,30 @@ def confirm(req: ConfirmRequest):
 
 
 @app.post("/click")
-def click(req: ClickRequest):
+def click(req: ClickRequest, x_agent_token: Optional[str] = Header(None)):
+    _auth(x_agent_token)
+    _rate_limit()
+    _cooldown("click")
     pyautogui.click(x=req.x, y=req.y, button=req.button)
     _audit("click", req.dict())
     return {"ok": True}
 
 
 @app.post("/type")
-def type_text(req: TypeRequest):
+def type_text(req: TypeRequest, x_agent_token: Optional[str] = Header(None)):
+    _auth(x_agent_token)
+    _rate_limit()
+    _cooldown("type")
     pyautogui.typewrite(req.text, interval=req.interval)
     _audit("type", req.dict())
     return {"ok": True}
 
 
 @app.post("/press")
-def press_keys(req: PressRequest, action_id: Optional[str] = None):
+def press_keys(req: PressRequest, action_id: Optional[str] = None, x_agent_token: Optional[str] = Header(None)):
+    _auth(x_agent_token)
+    _rate_limit()
+    _cooldown("press")
     if "press" in SENSITIVE_ACTIONS and not (action_id and _consume_confirmation(action_id, "press")):
         pending = _require_confirmation("press")
         return {"ok": False, "requires_confirmation": True, "action_id": pending}
@@ -185,7 +227,10 @@ def press_keys(req: PressRequest, action_id: Optional[str] = None):
 
 
 @app.post("/open_app")
-def open_app(req: OpenAppRequest, action_id: Optional[str] = None):
+def open_app(req: OpenAppRequest, action_id: Optional[str] = None, x_agent_token: Optional[str] = Header(None)):
+    _auth(x_agent_token)
+    _rate_limit()
+    _cooldown("open_app")
     if req.name not in ALLOWED_APPS:
         raise HTTPException(status_code=403, detail="App not in allowlist")
     if "open_app" in SENSITIVE_ACTIONS and not (action_id and _consume_confirmation(action_id, "open_app")):
@@ -200,7 +245,10 @@ def open_app(req: OpenAppRequest, action_id: Optional[str] = None):
 
 
 @app.post("/run_applescript")
-def run_applescript(req: AppleScriptRequest, action_id: Optional[str] = None):
+def run_applescript(req: AppleScriptRequest, action_id: Optional[str] = None, x_agent_token: Optional[str] = Header(None)):
+    _auth(x_agent_token)
+    _rate_limit()
+    _cooldown("run_applescript")
     if "run_applescript" in SENSITIVE_ACTIONS and not (action_id and _consume_confirmation(action_id, "run_applescript")):
         pending = _require_confirmation("run_applescript")
         return {"ok": False, "requires_confirmation": True, "action_id": pending}
@@ -225,7 +273,10 @@ def screenshot():
 
 
 @app.post("/shortcuts/run")
-def run_shortcut(req: ShortcutsRequest, action_id: Optional[str] = None):
+def run_shortcut(req: ShortcutsRequest, action_id: Optional[str] = None, x_agent_token: Optional[str] = Header(None)):
+    _auth(x_agent_token)
+    _rate_limit()
+    _cooldown("shortcuts_run")
     if "shortcuts_run" in SENSITIVE_ACTIONS and not (action_id and _consume_confirmation(action_id, "shortcuts_run")):
         pending = _require_confirmation("shortcuts_run")
         return {"ok": False, "requires_confirmation": True, "action_id": pending}
@@ -293,7 +344,9 @@ def _ax_to_node(element, depth: int, max_depth: int):
 
 
 @app.get("/ui_tree/full")
-def ui_tree_full(max_depth: int = 5):
+def ui_tree_full(max_depth: int = 5, x_agent_token: Optional[str] = Header(None)):
+    _auth(x_agent_token)
+    _rate_limit()
     """Full accessibility tree for frontmost app (AXUIElement)."""
     if AXUIElementCreateSystemWide is None:
         raise HTTPException(status_code=400, detail="pyobjc/Quartz not available")
@@ -325,7 +378,9 @@ def _search_tree(node: Dict[str, Any], query: str, results: list):
 
 
 @app.post("/ui_search")
-def ui_search(req: UiSearchRequest):
+def ui_search(req: UiSearchRequest, x_agent_token: Optional[str] = Header(None)):
+    _auth(x_agent_token)
+    _rate_limit()
     if AXUIElementCreateSystemWide is None:
         raise HTTPException(status_code=400, detail="pyobjc/Quartz not available")
 
@@ -342,8 +397,33 @@ def ui_search(req: UiSearchRequest):
     return {"ok": True, "results": results}
 
 
+@app.post("/ui_click_text")
+def ui_click_text(req: UiSearchRequest, action_id: Optional[str] = None, x_agent_token: Optional[str] = Header(None)):
+    _auth(x_agent_token)
+    _rate_limit()
+    _cooldown("ui_click")
+    if "press" in SENSITIVE_ACTIONS and not (action_id and _consume_confirmation(action_id, "press")):
+        pending = _require_confirmation("press")
+        return {"ok": False, "requires_confirmation": True, "action_id": pending}
+
+    search = ui_search(req, x_agent_token=x_agent_token)
+    results = search.get("results", [])
+    if not results:
+        raise HTTPException(status_code=404, detail="no matching elements")
+
+    first = results[0]
+    element_id = first.get("id")
+    if not element_id:
+        raise HTTPException(status_code=400, detail="result missing element id")
+
+    return ui_click(UiActionRequest(element_id=element_id), action_id=action_id, x_agent_token=x_agent_token)
+
+
 @app.post("/ui_click")
-def ui_click(req: UiActionRequest, action_id: Optional[str] = None):
+def ui_click(req: UiActionRequest, action_id: Optional[str] = None, x_agent_token: Optional[str] = Header(None)):
+    _auth(x_agent_token)
+    _rate_limit()
+    _cooldown("ui_click")
     if "press" in SENSITIVE_ACTIONS and not (action_id and _consume_confirmation(action_id, "press")):
         pending = _require_confirmation("press")
         return {"ok": False, "requires_confirmation": True, "action_id": pending}
@@ -362,7 +442,9 @@ def ui_click(req: UiActionRequest, action_id: Optional[str] = None):
 
 
 @app.post("/ui_set")
-def ui_set(req: UiActionRequest):
+def ui_set(req: UiActionRequest, x_agent_token: Optional[str] = Header(None)):
+    _auth(x_agent_token)
+    _rate_limit()
     element = UI_ELEMENT_INDEX.get(req.element_id)
     if element is None:
         raise HTTPException(status_code=404, detail="element_id not found; run ui_search or ui_tree/full first")
@@ -380,7 +462,9 @@ def ui_set(req: UiActionRequest):
 
 
 @app.post("/ui_focus")
-def ui_focus(req: UiActionRequest):
+def ui_focus(req: UiActionRequest, x_agent_token: Optional[str] = Header(None)):
+    _auth(x_agent_token)
+    _rate_limit()
     element = UI_ELEMENT_INDEX.get(req.element_id)
     if element is None:
         raise HTTPException(status_code=404, detail="element_id not found; run ui_search or ui_tree/full first")
@@ -395,7 +479,9 @@ def ui_focus(req: UiActionRequest):
 
 
 @app.post("/ui_scroll")
-def ui_scroll(req: UiActionRequest):
+def ui_scroll(req: UiActionRequest, x_agent_token: Optional[str] = Header(None)):
+    _auth(x_agent_token)
+    _rate_limit()
     element = UI_ELEMENT_INDEX.get(req.element_id)
     if element is None:
         raise HTTPException(status_code=404, detail="element_id not found; run ui_search or ui_tree/full first")
