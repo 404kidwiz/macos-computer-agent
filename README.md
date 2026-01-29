@@ -26,7 +26,12 @@ uvicorn macos_agent.server:app --host 127.0.0.1 --port 8765
 ```
 
 ## API (local-only)
+All endpoints (except `/health`) require headers:
+- `X-Agent-Token: <config token>`
+- `X-Session-Token: <from /session>`
+
 - `GET /health`
+- `POST /session`
 - `GET /screen`
 - `GET /cursor`
 - `GET /screenshot` (base64 PNG)
