@@ -1,0 +1,11 @@
+[project]
+name = "macos-computer-agent"
+version = "0.1.0"
+description = "Local macOS automation agent (screen + input + accessibility)"
+requires-python = ">=3.10"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
