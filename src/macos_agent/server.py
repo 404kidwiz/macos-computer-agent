@@ -125,6 +125,14 @@ class FocusAppRequest(BaseModel):
     name: str
 
 
+class MenuClickRequest(BaseModel):
+    menu_item: str
+
+
+class WindowFindRequest(BaseModel):
+    title: str
+
+
 class AppleScriptRequest(BaseModel):
     script: str
 
@@ -397,6 +405,42 @@ def focus_app(req: FocusAppRequest, x_agent_token: Optional[str] = Header(None),
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@app.post("/menu_click")
+def menu_click(req: MenuClickRequest, x_agent_token: Optional[str] = Header(None), x_session_token: Optional[str] = Header(None)):
+    _endpoint_allow("/menu_click")
+    _auth(x_agent_token)
+    _session_auth(x_session_token)
+    _session_allow(x_session_token, "/menu_click")
+    script = f'''
+    tell application "System Events"
+      tell (first application process whose frontmost is true)
+        click menu item "{req.menu_item}" of menu 1 of menu bar 1
+      end tell
+    end tell
+    '''
+    try:
+        subprocess.check_output(["osascript", "-e", script], timeout=2)
+        _audit("menu_click", _redact(req.dict()))
+        return {"ok": True}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/window_find")
+def window_find(req: WindowFindRequest, x_agent_token: Optional[str] = Header(None), x_session_token: Optional[str] = Header(None)):
+    _endpoint_allow("/window_find")
+    _auth(x_agent_token)
+    _session_auth(x_session_token)
+    _session_allow(x_session_token, "/window_find")
+    try:
+        data = _applescript_ui_fallback()
+        windows = data.get("windows", [])
+        matches = [w for w in windows if req.title.lower() in w.lower()]
+        return {"ok": True, "matches": matches}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @app.post("/run_applescript")
 def run_applescript(req: AppleScriptRequest, action_id: Optional[str] = None, x_agent_token: Optional[str] = Header(None), x_session_token: Optional[str] = Header(None), require_confirm: bool = False):
     _endpoint_allow("/run_applescript")
@@ -550,7 +594,17 @@ def _applescript_ui_fallback(timeout_sec: int = 2) -> Dict[str, Any]:
     '''
     try:
         output = subprocess.check_output(["osascript", "-e", script], timeout=timeout_sec)
-        return {"applescript_raw": output.decode("utf-8").strip()}
+        raw = output.decode("utf-8").strip()
+        lines = raw.split("\n")
+        app = lines[0].replace("APP:", "") if lines else ""
+        wins = []
+        menus = []
+        for line in lines[1:]:
+            if line.startswith("WINS:"):
+                wins = [w for w in line.replace("WINS:", "").split(", ") if w]
+            if line.startswith("MENUS:"):
+                menus = [m for m in line.replace("MENUS:", "").split(", ") if m]
+        return {"applescript_raw": raw, "app": app, "windows": wins, "menus": menus}
     except Exception:
         return {"applescript_raw": None}
 

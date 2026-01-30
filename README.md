@@ -47,6 +47,8 @@ All endpoints (except `/health` and `/session`) require headers:
 - `GET /ui_tree` (best-effort frontmost app info)
 - `GET /ax_status` (AX trust status; add `?prompt=true` to request permission)
 - `POST /focus_app` `{name:"Terminal"}`
+- `POST /menu_click` `{menu_item:"About This Mac"}`
+- `POST /window_find` `{title:"Finder"}`
 - `GET /ui_tree/full` (AX tree; includes `fallback` AppleScript UI data)
 - `POST /ui_search` `{query:"...", max_depth:5}`
 - `POST /ui_click_text` `{query:"...", max_depth:5}` (confirmation required)

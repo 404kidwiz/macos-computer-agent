@@ -1,5 +1,5 @@
 {
-  "allowed_apps": ["Terminal", "Visual Studio Code", "Safari", "Google Chrome"],
+  "allowed_apps": ["Terminal", "Visual Studio Code", "Safari", "Google Chrome", "Finder"],
   "audit_log": "agent_audit.log",
   "token": "mal-agent-9f3d7c0b-21c1-4a1d-9d2c-7b8a1c2f0e5b",
   "session_token_ttl_sec": 3600,
@@ -28,7 +28,9 @@
     "/open_app",
     "/run_applescript",
     "/shortcuts/run",
-    "/focus_app"
+    "/focus_app",
+    "/menu_click",
+    "/window_find"
   ],
   "cooldowns": {
     "click": 0.1,
