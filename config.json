@@ -30,7 +30,10 @@
     "/shortcuts/run",
     "/focus_app",
     "/menu_click",
-    "/window_find"
+    "/menu_click_index",
+    "/menu_click_contains",
+    "/window_find",
+    "/window_focus"
   ],
   "cooldowns": {
     "click": 0.1,

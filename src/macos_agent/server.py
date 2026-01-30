@@ -129,7 +129,19 @@ class MenuClickRequest(BaseModel):
     menu_item: str
 
 
+class MenuClickIndexRequest(BaseModel):
+    index: int
+
+
+class MenuClickContainsRequest(BaseModel):
+    text: str
+
+
 class WindowFindRequest(BaseModel):
+    title: str
+
+
+class WindowFocusRequest(BaseModel):
     title: str
 
 
@@ -426,6 +438,41 @@ def menu_click(req: MenuClickRequest, x_agent_token: Optional[str] = Header(None
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@app.post("/menu_click_index")
+def menu_click_index(req: MenuClickIndexRequest, x_agent_token: Optional[str] = Header(None), x_session_token: Optional[str] = Header(None)):
+    _endpoint_allow("/menu_click_index")
+    _auth(x_agent_token)
+    _session_auth(x_session_token)
+    _session_allow(x_session_token, "/menu_click_index")
+    script = f'''
+    tell application "System Events"
+      tell (first application process whose frontmost is true)
+        click menu item {req.index} of menu 1 of menu bar 1
+      end tell
+    end tell
+    '''
+    try:
+        subprocess.check_output(["osascript", "-e", script], timeout=2)
+        _audit("menu_click_index", _redact(req.dict()))
+        return {"ok": True}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/menu_click_contains")
+def menu_click_contains(req: MenuClickContainsRequest, x_agent_token: Optional[str] = Header(None), x_session_token: Optional[str] = Header(None)):
+    _endpoint_allow("/menu_click_contains")
+    _auth(x_agent_token)
+    _session_auth(x_session_token)
+    _session_allow(x_session_token, "/menu_click_contains")
+    data = _applescript_ui_fallback()
+    menus = data.get("menus", [])
+    match = next((m for m in menus if req.text.lower() in m.lower()), None)
+    if not match:
+        raise HTTPException(status_code=404, detail="menu item not found")
+    return menu_click(MenuClickRequest(menu_item=match), x_agent_token, x_session_token)
+
+
 @app.post("/window_find")
 def window_find(req: WindowFindRequest, x_agent_token: Optional[str] = Header(None), x_session_token: Optional[str] = Header(None)):
     _endpoint_allow("/window_find")
@@ -437,6 +484,28 @@ def window_find(req: WindowFindRequest, x_agent_token: Optional[str] = Header(No
         windows = data.get("windows", [])
         matches = [w for w in windows if req.title.lower() in w.lower()]
         return {"ok": True, "matches": matches}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/window_focus")
+def window_focus(req: WindowFocusRequest, x_agent_token: Optional[str] = Header(None), x_session_token: Optional[str] = Header(None)):
+    _endpoint_allow("/window_focus")
+    _auth(x_agent_token)
+    _session_auth(x_session_token)
+    _session_allow(x_session_token, "/window_focus")
+    script = f'''
+    tell application "System Events"
+      set frontApp to first application process whose frontmost is true
+      set targetWin to first window of frontApp whose name contains "{req.title}"
+      set frontmost of frontApp to true
+      perform action "AXRaise" of targetWin
+    end tell
+    '''
+    try:
+        subprocess.check_output(["osascript", "-e", script], timeout=2)
+        _audit("window_focus", _redact(req.dict()))
+        return {"ok": True}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -589,7 +658,15 @@ def _applescript_ui_fallback(timeout_sec: int = 2) -> Dict[str, Any]:
       try
         set menuItems to name of menu items of menu 1 of menu bar 1 of frontApp
       end try
-      return "APP:" & appName & "\nWINS:" & (winNames as string) & "\nMENUS:" & (menuItems as string)
+      set winList to ""
+      repeat with w in winNames
+        set winList to winList & w & "||"
+      end repeat
+      set menuList to ""
+      repeat with m in menuItems
+        set menuList to menuList & m & "||"
+      end repeat
+      return "APP:" & appName & "\nWINS:" & winList & "\nMENUS:" & menuList
     end tell
     '''
     try:
@@ -601,9 +678,9 @@ def _applescript_ui_fallback(timeout_sec: int = 2) -> Dict[str, Any]:
         menus = []
         for line in lines[1:]:
             if line.startswith("WINS:"):
-                wins = [w for w in line.replace("WINS:", "").split(", ") if w]
+                wins = [w for w in line.replace("WINS:", "").split("||") if w]
             if line.startswith("MENUS:"):
-                menus = [m for m in line.replace("MENUS:", "").split(", ") if m]
+                menus = [m for m in line.replace("MENUS:", "").split("||") if m]
         return {"applescript_raw": raw, "app": app, "windows": wins, "menus": menus}
     except Exception:
         return {"applescript_raw": None}
