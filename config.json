@@ -27,7 +27,8 @@
     "/press",
     "/open_app",
     "/run_applescript",
-    "/shortcuts/run"
+    "/shortcuts/run",
+    "/focus_app"
   ],
   "cooldowns": {
     "click": 0.1,

@@ -46,6 +46,7 @@ All endpoints (except `/health` and `/session`) require headers:
 - `POST /shortcuts/run` `{name:"Shortcut Name"}` (requires confirmation)
 - `GET /ui_tree` (best-effort frontmost app info)
 - `GET /ax_status` (AX trust status; add `?prompt=true` to request permission)
+- `POST /focus_app` `{name:"Terminal"}`
 - `GET /ui_tree/full` (AX tree; includes `fallback` AppleScript UI data)
 - `POST /ui_search` `{query:"...", max_depth:5}`
 - `POST /ui_click_text` `{query:"...", max_depth:5}` (confirmation required)

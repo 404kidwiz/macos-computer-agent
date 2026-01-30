@@ -121,6 +121,10 @@ class OpenAppRequest(BaseModel):
     name: str
 
 
+class FocusAppRequest(BaseModel):
+    name: str
+
+
 class AppleScriptRequest(BaseModel):
     script: str
 
@@ -377,6 +381,22 @@ def open_app(req: OpenAppRequest, action_id: Optional[str] = None, x_agent_token
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@app.post("/focus_app")
+def focus_app(req: FocusAppRequest, x_agent_token: Optional[str] = Header(None), x_session_token: Optional[str] = Header(None)):
+    _endpoint_allow("/focus_app")
+    _auth(x_agent_token)
+    _session_auth(x_session_token)
+    _session_allow(x_session_token, "/focus_app")
+    if req.name not in ALLOWED_APPS:
+        raise HTTPException(status_code=403, detail="App not in allowlist")
+    try:
+        subprocess.check_call(["open", "-a", req.name])
+        _audit("focus_app", _redact(req.dict()))
+        return {"ok": True}
+    except subprocess.CalledProcessError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @app.post("/run_applescript")
 def run_applescript(req: AppleScriptRequest, action_id: Optional[str] = None, x_agent_token: Optional[str] = Header(None), x_session_token: Optional[str] = Header(None), require_confirm: bool = False):
     _endpoint_allow("/run_applescript")
@@ -512,7 +532,7 @@ def _ax_tree_from_app(app, max_depth: int):
     return _ax_to_node(app, 0, max_depth)
 
 
-def _applescript_ui_fallback() -> Dict[str, Any]:
+def _applescript_ui_fallback(timeout_sec: int = 2) -> Dict[str, Any]:
     script = r'''
     tell application "System Events"
       set frontApp to first application process whose frontmost is true
@@ -529,8 +549,8 @@ def _applescript_ui_fallback() -> Dict[str, Any]:
     end tell
     '''
     try:
-        output = _run_applescript(script)
-        return {"applescript_raw": output}
+        output = subprocess.check_output(["osascript", "-e", script], timeout=timeout_sec)
+        return {"applescript_raw": output.decode("utf-8").strip()}
     except Exception:
         return {"applescript_raw": None}
 
