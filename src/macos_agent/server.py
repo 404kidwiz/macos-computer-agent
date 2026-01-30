@@ -496,6 +496,20 @@ def window_find(req: WindowFindRequest, x_agent_token: Optional[str] = Header(No
         raise HTTPException(status_code=400, detail=str(e))
 
 
+def _run_applescript_with_retry(script: str, timeout: float = 5.0, max_retries: int = 1):
+    """Run AppleScript with timeout and retry logic."""
+    attempt = 0
+    while attempt <= max_retries:
+        try:
+            return subprocess.check_output(["osascript", "-e", script], timeout=timeout)
+        except subprocess.TimeoutExpired:
+            if attempt == max_retries:
+                raise
+            attempt += 1
+        except subprocess.CalledProcessError:
+            raise
+
+
 @app.post("/window_focus")
 def window_focus(req: WindowFocusRequest, x_agent_token: Optional[str] = Header(None), x_session_token: Optional[str] = Header(None)):
     _endpoint_allow("/window_focus")
@@ -511,7 +525,7 @@ def window_focus(req: WindowFocusRequest, x_agent_token: Optional[str] = Header(
     end tell
     '''
     try:
-        subprocess.check_output(["osascript", "-e", script], timeout=2)
+        _run_applescript_with_retry(script, timeout=5.0, max_retries=1)
         _audit("window_focus", _redact(req.dict()))
         return {"ok": True}
     except Exception as e:
@@ -532,7 +546,7 @@ def window_close(req: WindowCloseRequest, x_agent_token: Optional[str] = Header(
     end tell
     '''
     try:
-        subprocess.check_output(["osascript", "-e", script], timeout=2)
+        _run_applescript_with_retry(script, timeout=5.0, max_retries=1)
         _audit("window_close", _redact(req.dict()))
         return {"ok": True}
     except Exception as e:

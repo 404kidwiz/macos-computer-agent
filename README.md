@@ -52,8 +52,8 @@ All endpoints (except `/health` and `/session`) require headers:
 - `POST /menu_click_contains` `{text:"About"}`
 - `POST /menu_click_path` `{path:"File > New Folder"}`
 - `POST /window_find` `{title:"Finder"}`
-- `POST /window_focus` `{title:"Finder"}`
-- `POST /window_close` `{title:"Finder"}`
+- `POST /window_focus` `{title:"Finder"}` (5s timeout with 1 retry)
+- `POST /window_close` `{title:"Finder"}` (5s timeout with 1 retry)
 - `GET /windows`
 - `GET /ui_tree/full` (AX tree; includes `fallback` AppleScript UI data)
 - `POST /ui_search` `{query:"...", max_depth:5}`
