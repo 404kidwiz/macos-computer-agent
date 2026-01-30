@@ -145,6 +145,14 @@ class WindowFocusRequest(BaseModel):
     title: str
 
 
+class WindowCloseRequest(BaseModel):
+    title: str
+
+
+class MenuPathRequest(BaseModel):
+    path: str
+
+
 class AppleScriptRequest(BaseModel):
     script: str
 
@@ -508,6 +516,64 @@ def window_focus(req: WindowFocusRequest, x_agent_token: Optional[str] = Header(
         return {"ok": True}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/window_close")
+def window_close(req: WindowCloseRequest, x_agent_token: Optional[str] = Header(None), x_session_token: Optional[str] = Header(None)):
+    _endpoint_allow("/window_close")
+    _auth(x_agent_token)
+    _session_auth(x_session_token)
+    _session_allow(x_session_token, "/window_close")
+    script = f'''
+    tell application "System Events"
+      set frontApp to first application process whose frontmost is true
+      set targetWin to first window of frontApp whose name contains "{req.title}"
+      tell targetWin to perform action "AXClose"
+    end tell
+    '''
+    try:
+        subprocess.check_output(["osascript", "-e", script], timeout=2)
+        _audit("window_close", _redact(req.dict()))
+        return {"ok": True}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/menu_click_path")
+def menu_click_path(req: MenuPathRequest, x_agent_token: Optional[str] = Header(None), x_session_token: Optional[str] = Header(None)):
+    _endpoint_allow("/menu_click_path")
+    _auth(x_agent_token)
+    _session_auth(x_session_token)
+    _session_allow(x_session_token, "/menu_click_path")
+    # Example path: "File > New Folder"
+    parts = [p.strip() for p in req.path.split(">") if p.strip()]
+    if len(parts) < 2:
+        raise HTTPException(status_code=400, detail="path must include menu and item")
+    menu_name = parts[0]
+    item_name = parts[1]
+    script = f'''
+    tell application "System Events"
+      tell (first application process whose frontmost is true)
+        click menu item "{item_name}" of menu "{menu_name}" of menu bar 1
+      end tell
+    end tell
+    '''
+    try:
+        subprocess.check_output(["osascript", "-e", script], timeout=2)
+        _audit("menu_click_path", _redact(req.dict()))
+        return {"ok": True}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/windows")
+def windows_list(x_agent_token: Optional[str] = Header(None), x_session_token: Optional[str] = Header(None)):
+    _endpoint_allow("/windows")
+    _auth(x_agent_token)
+    _session_auth(x_session_token)
+    _session_allow(x_session_token, "/windows")
+    data = _applescript_ui_fallback()
+    return {"ok": True, "windows": data.get("windows", [])}
 
 
 @app.post("/run_applescript")

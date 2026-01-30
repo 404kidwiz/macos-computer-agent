@@ -33,7 +33,10 @@
     "/menu_click_index",
     "/menu_click_contains",
     "/window_find",
-    "/window_focus"
+    "/window_focus",
+    "/window_close",
+    "/menu_click_path",
+    "/windows"
   ],
   "cooldowns": {
     "click": 0.1,
